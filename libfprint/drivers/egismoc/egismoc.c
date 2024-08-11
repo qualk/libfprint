@@ -43,14 +43,17 @@ struct _FpiDeviceEgisMoc
   FpiSsm         *cmd_ssm;
   FpiUsbTransfer *cmd_transfer;
   GCancellable   *interrupt_cancellable;
-
   GPtrArray      *enrolled_ids;
+  gint            max_enroll_stages;
 };
 
 G_DEFINE_TYPE (FpiDeviceEgisMoc, fpi_device_egismoc, FP_TYPE_DEVICE);
 
 static const FpIdEntry egismoc_id_table[] = {
   { .vid = 0x1c7a, .pid = 0x0582, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 },
+  { .vid = 0x1c7a, .pid = 0x0583, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
+  { .vid = 0x1c7a, .pid = 0x0586, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
+  { .vid = 0x1c7a, .pid = 0x0587, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE1 | EGISMOC_DRIVER_MAX_ENROLL_STAGES_20 },
   { .vid = 0x1c7a, .pid = 0x05a1, .driver_data = EGISMOC_DRIVER_CHECK_PREFIX_TYPE2 },
   { .vid = 0,      .pid = 0,      .driver_data = 0 }
 };
@@ -769,7 +772,7 @@ egismoc_enroll_status_report (FpDevice    *device,
       enroll_print->stage++;
       fp_info ("Partial capture successful. Please touch the sensor again (%d/%d)",
                enroll_print->stage,
-               EGISMOC_MAX_ENROLL_NUM);
+               self->max_enroll_stages);
       fpi_device_enroll_progress (device, enroll_print->stage, enroll_print->print, NULL);
       break;
 
@@ -849,7 +852,7 @@ egismoc_read_capture_cb (FpDevice *device,
       egismoc_enroll_status_report (device, enroll_print, ENROLL_STATUS_RETRY, error);
     }
 
-  if (enroll_print->stage == EGISMOC_ENROLL_TIMES)
+  if (enroll_print->stage == self->max_enroll_stages)
     fpi_ssm_next_state (self->task_ssm);
   else
     fpi_ssm_jump_to_state (self->task_ssm, ENROLL_CAPTURE_SENSOR_RESET);
@@ -1461,6 +1464,63 @@ egismoc_dev_init_handler (FpiSsm   *ssm,
 }
 
 static void
+
+egismoc_probe (FpDevice *device)
+
+{
+  GUsbDevice *usb_dev;
+  GError *error = NULL;
+  g_autofree gchar *serial = NULL;
+  FpiDeviceEgisMoc *self = FPI_DEVICE_EGISMOC (device);
+  fp_dbg ("%s enter --> ", G_STRFUNC);
+  /* Claim usb interface */
+  usb_dev = fpi_device_get_usb_device (device);
+  if (!g_usb_device_open (usb_dev, &error))
+    {
+      fp_dbg ("%s g_usb_device_open failed %s", G_STRFUNC, error->message);
+      fpi_device_probe_complete (device, NULL, NULL, error);
+      return;
+    }
+  if (!g_usb_device_reset (usb_dev, &error))
+    {
+      fp_dbg ("%s g_usb_device_reset failed %s", G_STRFUNC, error->message);
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (device, NULL, NULL, error);
+      return;
+    }
+  if (!g_usb_device_claim_interface (usb_dev, 0, 0, &error))
+    {
+      fp_dbg ("%s g_usb_device_claim_interface failed %s", G_STRFUNC, error->message);
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (device, NULL, NULL, error);
+      return;
+    }
+  if (g_strcmp0 (g_getenv ("FP_DEVICE_EMULATION"), "1") == 0)
+    serial = g_strdup ("emulated-device");
+  else
+    serial = g_usb_device_get_string_descriptor (usb_dev,
+                                                 g_usb_device_get_serial_number_index (usb_dev),
+                                                 &error);
+  if (error)
+    {
+      fp_dbg ("%s g_usb_device_get_string_descriptor failed %s", G_STRFUNC, error->message);
+      g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (device)),
+                                      0, 0, NULL);
+      g_usb_device_close (usb_dev, NULL);
+      fpi_device_probe_complete (device, NULL, NULL, error);
+      return;
+    }
+  if (fpi_device_get_driver_data (device) & EGISMOC_DRIVER_MAX_ENROLL_STAGES_20)
+    self->max_enroll_stages = 20;
+  else
+    self->max_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
+  fpi_device_set_nr_enroll_stages (device, self->max_enroll_stages);
+  g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (device)), 0, 0, NULL);
+  g_usb_device_close (usb_dev, NULL);
+  fpi_device_probe_complete (device, serial, NULL, error);
+}
+
+static void
 egismoc_open (FpDevice *device)
 {
   fp_dbg ("Opening device");
@@ -1540,10 +1600,11 @@ fpi_device_egismoc_class_init (FpiDeviceEgisMocClass *klass)
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->id_table = egismoc_id_table;
-  dev_class->nr_enroll_stages = EGISMOC_ENROLL_TIMES;
+  dev_class->nr_enroll_stages = EGISMOC_MAX_ENROLL_STAGES_DEFAULT;
   /* device should be "always off" unless being used */
   dev_class->temp_hot_seconds = 0;
 
+  dev_class->probe = egismoc_probe;
   dev_class->open = egismoc_open;
   dev_class->cancel = egismoc_cancel;
   dev_class->suspend = egismoc_suspend;
