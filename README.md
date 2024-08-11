@@ -1,5 +1,3 @@
-
-
 <div align="center">
 
 # LibFPrint
@@ -18,6 +16,21 @@
 [![Button Contributors]][Contributors]
 
 </div>
+
+## Installation
+
+### Arch Linux via PKGBUILD (AUR soon™)
+
+```bash
+git clone https://github.com/qualk/aur-packages.git
+cd aur-packages/libfprint-egis-git
+```
+
+#### [makepkg](https://wiki.archlinux.org/title/Makepkg)
+```bash
+sudo pacman -S --needed base-devel
+makepkg -si
+```
 
 ## History
 
